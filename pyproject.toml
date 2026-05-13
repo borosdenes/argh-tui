@@ -1,0 +1,18 @@
+[project]
+name = "argh-tui"
+version = "0.1.0"
+description = "TUI for invoking Python scripts with argparse"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.50",
+]
+
+[project.scripts]
+argh = "argh_tui.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["argh_tui*"]

@@ -123,6 +123,91 @@ class BoolToggle(Static):
         event.stop()
 
 
+class ChoicePicker(Static):
+    """Focusable cycler for `choices=...` args: left/right move through values."""
+
+    can_focus = True
+
+    class Toggled(Message):
+        pass
+
+    DEFAULT_CSS = """
+    ChoicePicker {
+        width: 1fr;
+        height: 1;
+        color: #b0b0b0;
+        background: #ffffff;
+    }
+    ChoicePicker.-modified { color: #000000; }
+    ChoicePicker:focus { background: #e4e4e4; color: #888888; }
+    ChoicePicker.-modified:focus { background: #e4e4e4; color: #000000; }
+    """
+
+    def __init__(self, choices: list[str], default: str | None):
+        super().__init__(classes="value", expand=True)
+        self._choices = choices
+        self._default_index = choices.index(default) if default in choices else None
+        self._index = self._default_index  # None means "no choice yet"
+
+    @property
+    def value(self) -> str:
+        return "" if self._index is None else self._choices[self._index]
+
+    @property
+    def modified(self) -> bool:
+        return self._index != self._default_index
+
+    def reset(self) -> None:
+        self._index = self._default_index
+        self._refresh()
+        self.post_message(self.Toggled())
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def on_resize(self, event) -> None:
+        self.refresh()
+
+    def watch_has_focus(self, focused: bool) -> None:
+        self._refresh()
+
+    def cycle(self, direction: int) -> None:
+        if self._index is None:
+            self._index = 0 if direction > 0 else len(self._choices) - 1
+        else:
+            self._index = (self._index + direction) % len(self._choices)
+        self._refresh()
+        self.post_message(self.Toggled())
+
+    def render(self) -> Text:
+        char = self.value if self._index is not None else "·"
+        width = max(self.size.width, 1) if self.size else 1
+        text = Text()
+        if self.has_focus:
+            fill_style = "on #e4e4e4"
+            char_style = f"{'#000000' if self.modified else '#888888'} on #e4e4e4"
+        else:
+            fill_style = "on #ffffff"
+            char_style = f"{'#000000' if self.modified else '#b0b0b0'} on #ffffff"
+        text.append(char, style=char_style)
+        # Pad to widget width with explicit bg — same reason as BoolToggle.render.
+        if width > len(char):
+            text.append(" " * (width - len(char)), style=fill_style)
+        return text
+
+    def _refresh(self) -> None:
+        self.set_class(self.modified, "-modified")
+        self.refresh()
+
+    def on_key(self, event) -> None:
+        if event.key == "left":
+            self.cycle(-1)
+            event.stop()
+        elif event.key == "right":
+            self.cycle(1)
+            event.stop()
+
+
 class ArghInput(Input):
     """Input variant that:
 
@@ -175,9 +260,14 @@ class ArgRow(Horizontal):
         self.spec = spec
         self._label_width = label_width
         self.label = Static(spec.display_name, classes="label", markup=False)
-        self.value_widget: ArghInput | BoolToggle
+        self.value_widget: ArghInput | BoolToggle | ChoicePicker
         if spec.is_bool_flag:
             self.value_widget = BoolToggle(default=bool(spec.default))
+        elif spec.choices and not spec.is_list:
+            self.value_widget = ChoicePicker(
+                choices=[str(c) for c in spec.choices],
+                default=str(spec.default) if spec.default is not None else None,
+            )
         else:
             default_str = _format_default(spec) if spec.default is not None else ""
             self.value_widget = ArghInput(
@@ -198,13 +288,13 @@ class ArgRow(Horizontal):
     @property
     def modified(self) -> bool:
         w = self.value_widget
-        if isinstance(w, BoolToggle):
+        if isinstance(w, (BoolToggle, ChoicePicker)):
             return w.modified
         return w.value != ""
 
     def reset(self) -> None:
         w = self.value_widget
-        if isinstance(w, BoolToggle):
+        if isinstance(w, (BoolToggle, ChoicePicker)):
             w.reset()
         else:
             w.value = ""
@@ -309,6 +399,9 @@ class ArghApp(App):
     def on_bool_toggle_toggled(self, event: BoolToggle.Toggled) -> None:
         self._update_preview()
 
+    def on_choice_picker_toggled(self, event: ChoicePicker.Toggled) -> None:
+        self._update_preview()
+
     def on_descendant_focus(self, event) -> None:
         self._update_help()
 
@@ -370,11 +463,22 @@ class ArghApp(App):
         for row in self.rows:
             spec = row.spec
             opt = spec.option_strings[0] if spec.option_strings else None
+            widget = row.value_widget
             if spec.is_bool_flag:
-                if row.value_widget.modified and opt:
+                if widget.modified and opt:
                     cmd.append(opt)
                 continue
-            value = row.value_widget.value
+            if isinstance(widget, ChoicePicker):
+                if not widget.modified:
+                    continue
+                if spec.positional:
+                    cmd.append(widget.value)
+                else:
+                    if opt:
+                        cmd.append(opt)
+                    cmd.append(widget.value)
+                continue
+            value = widget.value
             if value == "":
                 continue
             if spec.is_list:

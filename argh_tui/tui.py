@@ -300,6 +300,58 @@ class ArgRow(Horizontal):
             w.value = ""
 
 
+class CwdRow(Horizontal):
+    """Row for setting the script's working directory.
+
+    Not derived from an ArgSpec — the value is passed to subprocess as ``cwd=``,
+    not appended to argv. Label is auto-sized so the value follows with a
+    single-space gap; no column alignment with the arg rows below.
+    """
+
+    DEFAULT_CSS = """
+    CwdRow { height: 1; background: #ffffff; }
+    """
+
+    LABEL_TEXT = "· cwd "
+
+    def __init__(self, default_cwd: Path):
+        super().__init__()
+        self._default_cwd = str(default_cwd)
+        self.label = Static(self.LABEL_TEXT, classes="label", markup=False)
+        self.value_widget = ArghInput(
+            placeholder=self._default_cwd,
+            suggester=SuggestFromList([self._default_cwd]),
+            default_value=self._default_cwd,
+            classes="value",
+        )
+        self.value_widget.cursor_blink = False
+
+    def compose(self) -> ComposeResult:
+        yield self.label
+        yield self.value_widget
+
+    def on_mount(self) -> None:
+        self.label.styles.width = len(self.LABEL_TEXT)
+
+    @property
+    def cwd(self) -> Path:
+        """Returns the resolved absolute path the script should run in."""
+        v = self.value_widget.value.strip()
+        if not v:
+            return Path(self._default_cwd)
+        p = Path(v).expanduser()
+        if not p.is_absolute():
+            p = Path(self._default_cwd) / p
+        return p
+
+    @property
+    def modified(self) -> bool:
+        return self.value_widget.value != ""
+
+    def reset(self) -> None:
+        self.value_widget.value = ""
+
+
 class ArghApp(App):
     CSS = """
     Screen { background: #ffffff; color: #000000; }
@@ -367,6 +419,8 @@ class ArghApp(App):
         self.venv_label = venv_label
         self.specs = specs
         self.label_width = max((len(s.display_name) for s in specs), default=12) + 2
+        self.initial_cwd = Path.cwd()
+        self.cwd_row: CwdRow | None = None
         self.rows: list[ArgRow] = []
 
     def compose(self) -> ComposeResult:
@@ -376,6 +430,8 @@ class ArghApp(App):
             markup=False,
         )
         with VerticalScroll(id="rows"):
+            self.cwd_row = CwdRow(self.initial_cwd)
+            yield self.cwd_row
             for spec in self.specs:
                 row = ArgRow(spec, self.label_width)
                 self.rows.append(row)
@@ -391,6 +447,8 @@ class ArghApp(App):
         self.query_one("#rows", VerticalScroll).can_focus = False
         if self.rows:
             self.rows[0].value_widget.focus()
+        elif self.cwd_row is not None:
+            self.cwd_row.value_widget.focus()
         self._refresh()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -432,7 +490,9 @@ class ArghApp(App):
             return
         self.exit()
 
-    def _focused_row(self) -> ArgRow | None:
+    def _focused_row(self) -> ArgRow | CwdRow | None:
+        if self.cwd_row is not None and self.cwd_row.value_widget.has_focus:
+            return self.cwd_row
         for row in self.rows:
             if row.value_widget.has_focus:
                 return row
@@ -446,6 +506,12 @@ class ArghApp(App):
         row = self._focused_row()
         if row is None:
             return
+        if isinstance(row, CwdRow):
+            self.query_one("#help", Static).update(
+                "Working directory for the script. Defaults to where argh was launched.\n"
+                "Accepts ~ and relative paths."
+            )
+            return
         spec = row.spec
         text = spec.help or ""
         if spec.choices:
@@ -456,7 +522,10 @@ class ArghApp(App):
     def _update_preview(self) -> None:
         cmd = self._build_command()
         text = " ".join(shlex.quote(str(c)) for c in cmd)
-        self.query_one("#preview", Static).update(f"$ {text}")
+        prefix = ""
+        if self.cwd_row is not None and self.cwd_row.modified:
+            prefix = f"cd {shlex.quote(str(self.cwd_row.cwd))} && "
+        self.query_one("#preview", Static).update(f"$ {prefix}{text}")
 
     def _build_command(self) -> list[str]:
         cmd: list[str] = [str(self.python_path), str(self.script_path)]
@@ -495,13 +564,22 @@ class ArghApp(App):
 
     def _launch_script(self) -> None:
         cmd = self._build_command()
+        cwd_path = self.cwd_row.cwd if self.cwd_row is not None else None
+        cwd_modified = self.cwd_row.modified if self.cwd_row is not None else False
         with self.suspend():
             print()
-            print(f"$ {' '.join(shlex.quote(str(c)) for c in cmd)}")
+            cmd_text = " ".join(shlex.quote(str(c)) for c in cmd)
+            if cwd_modified:
+                print(f"$ cd {shlex.quote(str(cwd_path))} && {cmd_text}")
+            else:
+                print(f"$ {cmd_text}")
             print()
             try:
-                result = subprocess.run(cmd)
+                result = subprocess.run(cmd, cwd=cwd_path)
                 exit_code = result.returncode
+            except FileNotFoundError as exc:
+                print(f"argh: {exc}")
+                exit_code = -1
             except KeyboardInterrupt:
                 exit_code = 130
             print()

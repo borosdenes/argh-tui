@@ -85,6 +85,19 @@ JSON and exits before the script's real work runs.
 > Only point argh at scripts you trust — same as running `python script.py`
 > would.
 
+> **Startup cost.** Top-level imports also run every time argh launches. For
+> scripts that `import torch` (or anything else slow) at module level, expect
+> a noticeable delay before the form appears — argh is paying the same import
+> cost the script itself would.
+
+## Limitations
+
+- **Subparsers aren't supported.** Scripts that use
+  `parser.add_subparsers()` to dispatch between subcommands (`git`-style)
+  will only show the top-level parser's arguments — subcommand-specific
+  args won't appear. Point argh at the subcommand's underlying module if it
+  has one, or wait for proper support.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

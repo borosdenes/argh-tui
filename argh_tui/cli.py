@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     app = ArghApp(
         script=script,
         python=interpreter.python,
-        venv_label=interpreter.label,
+        venv_dir=interpreter.venv_dir,
         specs=specs,
     )
     app.run()

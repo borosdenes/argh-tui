@@ -17,6 +17,7 @@ from textual.suggester import SuggestFromList
 from textual.widgets import Input, Static
 
 from argh_tui.extract import ArgSpec
+from argh_tui.venv_utils import _venv_python
 
 
 NAV_KEYS = frozenset({
@@ -352,6 +353,66 @@ class CwdRow(Horizontal):
         self.value_widget.value = ""
 
 
+class VenvRow(Horizontal):
+    """Row for picking the Python interpreter / venv.
+
+    The placeholder shows the auto/explicit label (e.g. ``.venv  (auto)``); the
+    right-arrow autocomplete fills only the path part. ``python`` resolves the
+    typed value as a venv dir, then as a python binary, then returns it as-is
+    so the subprocess can surface its own error.
+    """
+
+    DEFAULT_CSS = """
+    VenvRow { height: 1; background: #ffffff; }
+    """
+
+    LABEL_TEXT = "· venv "
+
+    def __init__(
+        self,
+        default_python: Path,
+        default_venv_dir: Path | None,
+    ):
+        super().__init__()
+        self._default_python = default_python
+        path_hint = str(default_venv_dir) if default_venv_dir else str(default_python)
+        self.label = Static(self.LABEL_TEXT, classes="label", markup=False)
+        self.value_widget = ArghInput(
+            placeholder=path_hint,
+            suggester=SuggestFromList([path_hint]),
+            default_value=path_hint,
+            classes="value",
+        )
+        self.value_widget.cursor_blink = False
+
+    def compose(self) -> ComposeResult:
+        yield self.label
+        yield self.value_widget
+
+    def on_mount(self) -> None:
+        self.label.styles.width = len(self.LABEL_TEXT)
+
+    @property
+    def python(self) -> Path:
+        """Returns the python binary to use for launching the script."""
+        v = self.value_widget.value.strip()
+        if not v:
+            return self._default_python
+        p = Path(v).expanduser()
+        if p.is_dir():
+            py = _venv_python(p)
+            if py is not None:
+                return py
+        return p
+
+    @property
+    def modified(self) -> bool:
+        return self.value_widget.value != ""
+
+    def reset(self) -> None:
+        self.value_widget.value = ""
+
+
 class ArghApp(App):
     CSS = """
     Screen { background: #ffffff; color: #000000; }
@@ -366,12 +427,13 @@ class ArghApp(App):
     VerticalScroll {
         height: auto;
         max-height: 1fr;
-        padding: 1 2 0 2;
+        padding: 0 2 0 2;
         scrollbar-size: 0 0;
         background: #ffffff;
     }
 
     ArgRow      { height: 1; background: #ffffff; }
+    .spacer     { height: 1; background: #ffffff; }
     .label      { color: #000000; background: #ffffff; }
 
     Input {
@@ -409,29 +471,30 @@ class ArghApp(App):
         self,
         script: Path,
         python: Path,
-        venv_label: str,
+        venv_dir: Path | None,
         specs: list[ArgSpec],
     ) -> None:
         super().__init__()
         self.theme = "textual-light"
         self.script_path = script
         self.python_path = python
-        self.venv_label = venv_label
+        self.venv_dir = venv_dir
         self.specs = specs
         self.label_width = max((len(s.display_name) for s in specs), default=12) + 2
         self.initial_cwd = Path.cwd()
         self.cwd_row: CwdRow | None = None
+        self.venv_row: VenvRow | None = None
         self.rows: list[ArgRow] = []
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            f"{self.script_path.name}    venv: {self.venv_label}",
-            id="header",
-            markup=False,
-        )
+        header = Text(self.script_path.name, style="bold")
+        yield Static(header, id="header", markup=False)
         with VerticalScroll(id="rows"):
             self.cwd_row = CwdRow(self.initial_cwd)
             yield self.cwd_row
+            self.venv_row = VenvRow(self.python_path, self.venv_dir)
+            yield self.venv_row
+            yield Static("", classes="spacer", markup=False)
             for spec in self.specs:
                 row = ArgRow(spec, self.label_width)
                 self.rows.append(row)
@@ -490,9 +553,11 @@ class ArghApp(App):
             return
         self.exit()
 
-    def _focused_row(self) -> ArgRow | CwdRow | None:
+    def _focused_row(self) -> ArgRow | CwdRow | VenvRow | None:
         if self.cwd_row is not None and self.cwd_row.value_widget.has_focus:
             return self.cwd_row
+        if self.venv_row is not None and self.venv_row.value_widget.has_focus:
+            return self.venv_row
         for row in self.rows:
             if row.value_widget.has_focus:
                 return row
@@ -512,6 +577,12 @@ class ArghApp(App):
                 "Accepts ~ and relative paths."
             )
             return
+        if isinstance(row, VenvRow):
+            self.query_one("#help", Static).update(
+                "Python interpreter / venv directory.\n"
+                "Accepts a venv dir (the python inside it is used) or a python binary path."
+            )
+            return
         spec = row.spec
         text = spec.help or ""
         if spec.choices:
@@ -528,7 +599,8 @@ class ArghApp(App):
         self.query_one("#preview", Static).update(f"$ {prefix}{text}")
 
     def _build_command(self) -> list[str]:
-        cmd: list[str] = [str(self.python_path), str(self.script_path)]
+        python = self.venv_row.python if self.venv_row is not None else self.python_path
+        cmd: list[str] = [str(python), str(self.script_path)]
         for row in self.rows:
             spec = row.spec
             opt = spec.option_strings[0] if spec.option_strings else None

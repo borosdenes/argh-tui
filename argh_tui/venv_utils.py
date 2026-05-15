@@ -9,7 +9,8 @@ from pathlib import Path
 @dataclass
 class Interpreter:
     python: Path
-    label: str  # short, human-friendly label for the TUI header
+    label: str  # short, human-friendly label for the TUI header (may include "(auto)" / "(system)")
+    venv_dir: Path | None = None  # the venv DIR (None when falling back to a system python)
 
 
 def _venv_python(venv_dir: Path) -> Path | None:
@@ -45,7 +46,7 @@ def discover(script: Path, explicit_venv: Path | None) -> Interpreter:
         python = _venv_python(explicit_venv)
         if python is None:
             raise FileNotFoundError(f"--venv: no python found inside {explicit_venv}")
-        return Interpreter(python=python, label=str(explicit_venv))
+        return Interpreter(python=python, label=str(explicit_venv), venv_dir=explicit_venv)
 
     script_dir = script.resolve().parent
     home = Path.home()
@@ -57,11 +58,11 @@ def discover(script: Path, explicit_venv: Path | None) -> Interpreter:
                 label = str(venv_dir.relative_to(Path.cwd())) + "  (auto)"
             except ValueError:
                 label = str(venv_dir) + "  (auto)"
-            return Interpreter(python=python, label=label)
+            return Interpreter(python=python, label=label, venv_dir=venv_dir)
 
     for fallback in ("python3", "python"):
         path = shutil.which(fallback)
         if path:
-            return Interpreter(python=Path(path), label=f"{fallback}  (system)")
+            return Interpreter(python=Path(path), label=f"{fallback}  (system)", venv_dir=None)
 
     raise FileNotFoundError("No Python interpreter found (.venv, python3, python all missing).")

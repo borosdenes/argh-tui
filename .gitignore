@@ -19,6 +19,9 @@ env/
 .vscode/
 .DS_Store
 
+# Local Claude Code instructions (per-machine, not checked in)
+CLAUDE.local.md
+
 # Coverage / test
 .coverage
 .coverage.*
